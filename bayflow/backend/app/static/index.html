@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BayFlow – Auto Repair Platform</title>
+<style>
+:root{--bg:#f5f7fa;--card:#fff;--ink:#14213d;--mut:#64708a;--pri:#0b6bcb;--ok:#13795b;--bad:#b42318;--line:#e2e8f0;--warn:#b54708}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1420;--card:#172033;--ink:#e8edf6;--mut:#93a0b8;--pri:#4da3ff;--ok:#3ccf9d;--bad:#ff7a70;--line:#273248;--warn:#f5a45c}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+header b{font-size:20px;color:var(--pri);cursor:pointer}header nav{display:flex;gap:6px;flex:1;flex-wrap:wrap}
+a.nav,button{font:inherit;cursor:pointer}
+a.nav{padding:6px 10px;border-radius:8px;color:var(--ink);text-decoration:none}a.nav:hover,a.nav.on{background:var(--bg)}
+main{max-width:1100px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+button{border:1px solid var(--line);background:var(--card);color:var(--ink);padding:7px 12px;border-radius:8px}
+button.p{background:var(--pri);color:#fff;border-color:var(--pri)}button.d{color:var(--bad);border-color:var(--bad)}button:disabled{opacity:.5}
+input,select,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);width:100%}
+label{display:block;font-size:13px;color:var(--mut);margin:8px 0 3px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row>*{flex:0 0 auto}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;background:var(--bg);border:1px solid var(--line)}
+.mut{color:var(--mut)}table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
+.tl{border-left:3px solid var(--line);margin-left:6px;padding-left:12px}.tl div{margin-bottom:8px;position:relative}.tl div:before{content:"";position:absolute;left:-18px;top:6px;width:9px;height:9px;border-radius:50%;background:var(--pri)}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:10px;color:#fff;display:none;z-index:99;max-width:90%}
+.modal{position:fixed;inset:0;background:#0008;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:20px;z-index:20}
+.modal>div{background:var(--card);border-radius:14px;max-width:760px;width:100%;padding:16px}
+.bell{position:relative}.bell i{position:absolute;top:-6px;right:-6px;background:var(--bad);color:#fff;border-radius:99px;font-size:11px;padding:0 6px;font-style:normal}
+.steps span{padding:3px 10px;border-radius:99px;background:var(--bg);margin-right:4px;font-size:13px}.steps .on{background:var(--pri);color:#fff}
+.slot{margin:3px}.slot.sel{background:var(--pri);color:#fff}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+</style></head><body>
+<header><b onclick="go('#/')">🔧 BayFlow</b><nav id="nav"></nav><div id="who" class="row"></div></header>
+<main id="app"></main><div id="toast"></div><div id="modal"></div>
+<script>
+const $=s=>document.querySelector(s);
+const S={token:localStorage.getItem('bf_token'),me:null,wiz:null,pos:{shop:null,tab:'queue'},notif:{unread:0,items:[]}};
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pkr=n=>'PKR '+Number(n).toLocaleString('en-PK');
+const fmt=d=>new Date(d).toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'short'});
+const ROLE={OWNER:'Owner',SERVICE_ADVISOR:'Service Advisor',TECHNICIAN:'Technician',PARTS_PERSON:'Parts Person',QC_INSPECTOR:'QC Inspector',CUSTOMER:'Customer'};
+function toast(m,bad){const t=$('#toast');t.textContent=m;t.style.background=bad?'#b42318':'#13795b';t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}
+async function api(path,o={}){const h={'Content-Type':'application/json'};if(S.token)h.Authorization='Bearer '+S.token;if(o.idem)h['Idempotency-Key']=o.idem;
+ const r=await fetch('/api'+path,{method:o.method||'GET',headers:h,body:o.body!==undefined?JSON.stringify(o.body):undefined});
+ const t=await r.text();let d;try{d=JSON.parse(t)}catch{d=t}
+ if(r.status===401&&S.token&&!path.startsWith('/auth')){logout(true)}
+ if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail||d));return d}
+const go=h=>{location.hash=h};
+function logout(silent){S.token=null;S.me=null;localStorage.removeItem('bf_token');if(!silent)toast('Signed out');go('#/login');render()}
+function setAuth(d){S.token=d.token;S.me=d.user;localStorage.setItem('bf_token',d.token)}
+const isStaff=()=>S.me&&S.me.kind==='staff';
+async function loadMe(){if(S.token&&!S.me){try{S.me=await api('/me')}catch{S.me=null}}}
+async function loadNotif(){if(!S.me)return;try{S.notif=await api('/notifications')}catch{}}
+async function guard(fn){try{return await fn()}catch(e){toast(e.message,true)}}
+window.addEventListener('hashchange',render);
+
+async function render(){
+ await loadMe();await loadNotif();
+ const h=location.hash||'#/';const nav=$('#nav');
+ const link=(href,t)=>`<a class="nav ${h===href?'on':''}" href="${href}">${t}</a>`;
+ nav.innerHTML=link('#/','Garages')+(S.me&&!isStaff()?link('#/me','My bookings'):'')+(isStaff()?link('#/pos','Shop POS'):'');
+ $('#who').innerHTML=S.me?`<span class="bell" onclick="showNotif()" style="cursor:pointer">🔔${S.notif.unread?`<i>${S.notif.unread}</i>`:''}</span><span class="mut">${esc(S.me.name)}</span><button onclick="logout()">Sign out</button>`:`<a class="nav" href="#/login">Sign in</a>`;
+ const m=h.match(/^#\/shop\/(\d+)/);
+ if(m)return viewShop(+m[1]);
+ if(h==='#/login')return viewLogin();
+ if(h==='#/me')return S.me?viewCustomer():go('#/login');
+ if(h==='#/pos')return S.me&&isStaff()?viewPOS():go('#/login');
+ return viewHome();
+}
+async function showNotif(){await loadNotif();
+ modal(`<div class="row"><h3 style="flex:1;margin:0">Notifications</h3><button onclick="markAll()">Mark all read</button><button onclick="closeModal()">Close</button></div>`+
+ (S.notif.items.map(n=>`<div class="card" style="${n.read?'opacity:.6':''}">${esc(n.message)}<div class="mut">${fmt(n.at)}</div></div>`).join('')||'<p class="mut">Nothing yet.</p>'))}
+async function markAll(){await api('/notifications/read-all',{method:'POST'});closeModal();render()}
+function modal(html){$('#modal').innerHTML=`<div class="modal" onclick="if(event.target===this)closeModal()"><div>${html}</div></div>`}
+function closeModal(){if(window.CALL&&CALL.id&&!CALL.ended)endCall(true);$('#modal').innerHTML=''}
+
+/* ---------------- home / directory ---------------- */
+async function viewHome(){
+ $('#app').innerHTML=`<h2>Find a garage</h2><div class="row card"><input id="q" placeholder="Search by name or city (e.g. Lahore)" style="flex:1;min-width:200px"><button class="p" onclick="loadShops()">Search</button></div><div id="shops" class="grid"></div>`;
+ $('#q').onkeydown=e=>{if(e.key==='Enter')loadShops()};loadShops()}
+async function loadShops(){const q=$('#q').value;const list=await guard(()=>api('/public/shops'+(q?`?q=${encodeURIComponent(q)}`:'')))||[];
+ $('#shops').innerHTML=list.map(s=>`<div class="card"><h3 style="margin:0">${esc(s.name)}</h3><div class="mut">📍 ${esc(s.city)} · ${esc(s.address)}</div><div class="mut">🕘 ${s.open_time}–${s.close_time} · ☎ ${esc(s.phone)}</div><p class="row"><button class="p" onclick="go('#/shop/${s.id}')">Book a service</button><button onclick="startCall(${s.id})" title="Talk to the AI front desk">📞 Call</button></p></div>`).join('')||'<p class="mut">No garages found.</p>'}
+
+/* ---------------- login ---------------- */
+function viewLogin(){
+ $('#app').innerHTML=`<div class="grid">
+ <div class="card"><h3>Customer – sign in or create account</h3><div id="cf"></div></div>
+ <div class="card"><h3>Staff / Owner login</h3><label>Email</label><input id="se"><label>Password</label><input id="sp" type="password"><p><button class="p" onclick="staffLogin()">Sign in</button></p>
+ <hr><h4>New shop owner?</h4><label>Name</label><input id="on"><label>Email</label><input id="oe"><label>Password (8+ chars)</label><input id="op" type="password"><p><button onclick="ownerReg()">Register as owner</button></p></div></div>
+ <p class="mut">Demo: owner@bayflow.demo / advisor.lhr@bayflow.demo / tech.lhr@bayflow.demo / parts.lhr@bayflow.demo / qc.lhr@bayflow.demo / ali@customer.demo — password Demo@1234</p>`;
+ customerForm('#cf',()=>go('#/me'))}
+function customerForm(sel,done){$(sel).innerHTML=`<label>Name (new accounts)</label><input id="cn"><label>Email</label><input id="ce"><label>Phone</label><input id="cp"><label>Password (8+ chars)</label><input id="cw" type="password"><p><button class="p" id="cb">Continue</button></p>`;
+ $('#cb').onclick=()=>guard(async()=>{setAuth(await api('/auth/customer-access',{method:'POST',body:{name:$('#cn').value||$('#ce').value.split('@')[0],email:$('#ce').value,phone:$('#cp').value,password:$('#cw').value}}));toast('Welcome!');await done()})}
+const staffLogin=()=>guard(async()=>{setAuth(await api('/auth/login',{method:'POST',body:{email:$('#se').value,password:$('#sp').value}}));go(isStaff()?'#/pos':'#/me');render()});
+const ownerReg=()=>guard(async()=>{setAuth(await api('/auth/register-owner',{method:'POST',body:{name:$('#on').value,email:$('#oe').value,password:$('#op').value}}));go('#/pos');render()});
+
+/* ---------------- booking wizard ---------------- */
+async function viewShop(id){
+ const shop=await guard(()=>api('/public/shops/'+id));if(!shop)return;
+ if(!S.wiz||S.wiz.shop.id!==id)S.wiz={shop,step:1,svc:null,date:'',slot:null,vid:'',veh:{make:'',model:'',year:2020,plate:'',odometer:0},notes:'',key:crypto.randomUUID(),vehicles:[]};
+ wiz()}
+async function wiz(){const w=S.wiz,s=w.shop;
+ const hdr=`<h2>${esc(s.name)} <button onclick="startCall(${s.id})">📞 Call</button></h2><div class="mut">${esc(s.city)} · ${esc(s.address)}</div><p class="steps">${['Service','Date & time','Vehicle','Confirm'].map((t,i)=>`<span class="${w.step===i+1?'on':''}">${i+1}. ${t}</span>`).join('')}</p>`;let b='';
+ if(w.step===1)b=`<div class="grid">${s.services.map(x=>`<div class="card"><b>${esc(x.name)}</b><div class="mut">${pkr(x.price)} · ~${x.duration_min} min</div><p><button class="p" onclick="S.wiz.svc=${x.id};S.wiz.step=2;wiz()">Select</button></p></div>`).join('')}</div>`;
+ if(w.step===2){b=`<div class="card"><label>Choose a date</label><input type="date" id="dt" min="${new Date().toISOString().slice(0,10)}" value="${w.date}" onchange="S.wiz.date=this.value;S.wiz.slot=null;wiz()"><div id="sl" style="margin-top:10px"></div></div><button onclick="S.wiz.step=1;wiz()">Back</button> <button class="p" ${w.slot?'':'disabled'} onclick="S.wiz.step=3;wiz()">Next</button>`}
+ if(w.step===3){if(S.me&&!isStaff()&&!w.vehicles.length)w.vehicles=await api('/vehicles');
+  const v=w.veh;b=`<div class="card">${w.vehicles.length?`<label>Use a saved vehicle</label><select onchange="S.wiz.vid=this.value;wiz()"><option value="">— new vehicle —</option>${w.vehicles.map(x=>`<option value="${x.id}" ${w.vid==x.id?'selected':''}>${esc(x.label)}</option>`).join('')}</select>`:''}
+  ${w.vid?'':`<div class="row"><div><label>Make</label><input value="${esc(v.make)}" oninput="S.wiz.veh.make=this.value"></div><div><label>Model</label><input value="${esc(v.model)}" oninput="S.wiz.veh.model=this.value"></div><div><label>Year</label><input type="number" value="${v.year}" oninput="S.wiz.veh.year=+this.value"></div><div><label>Registration</label><input value="${esc(v.plate)}" oninput="S.wiz.veh.plate=this.value"></div><div><label>Odometer (km)</label><input type="number" value="${v.odometer}" oninput="S.wiz.veh.odometer=+this.value"></div></div>`}
+  <label>Describe the problem</label><textarea oninput="S.wiz.notes=this.value">${esc(w.notes)}</textarea></div><button onclick="S.wiz.step=2;wiz()">Back</button> <button class="p" onclick="S.wiz.step=4;wiz()">Next</button>`}
+ if(w.step===4){const svc=s.services.find(x=>x.id===w.svc);
+  b=`<div class="card"><b>${esc(svc.name)}</b> — ${pkr(svc.price)}<br>🗓 ${fmt(w.slot)}<br>🚗 ${w.vid?esc(w.vehicles.find(x=>x.id==w.vid).label):esc(`${w.veh.year} ${w.veh.make} ${w.veh.model} ${w.veh.plate}`)}</div>
+  ${S.me&&!isStaff()?`<button onclick="S.wiz.step=3;wiz()">Back</button> <button class="p" id="bk" onclick="confirmBooking()">Confirm booking</button>`:`<div class="card"><h3>Sign in or create your customer account to finish</h3><div id="cf"></div></div>`}`}
+ $('#app').innerHTML=hdr+b;
+ if(w.step===2&&w.date)loadSlots();if(w.step===4&&!(S.me&&!isStaff()))customerForm('#cf',async()=>{await render();})}
+async function loadSlots(){const w=S.wiz;const sl=await guard(()=>api(`/public/shops/${w.shop.id}/slots?date=${w.date}`))||[];
+ $('#sl').innerHTML=sl.length?sl.map(x=>`<button class="slot ${w.slot===x.start?'sel':''}" ${x.available?'':'disabled'} onclick="S.wiz.slot='${x.start}';wiz()">${x.start.slice(11,16)} <small>(${x.available?x.available+' left':'full'})</small></button>`).join(''):'<span class="mut">Closed or no slots on this date.</span>'}
+async function confirmBooking(){const w=S.wiz;$('#bk').disabled=true;
+ try{const body={shop_id:w.shop.id,service_id:w.svc,slot_start:w.slot,notes:w.notes};if(w.vid)body.vehicle_id=+w.vid;else body.vehicle=w.veh;
+  const b=await api('/bookings',{method:'POST',body,idem:w.key});S.wiz=null;toast('Booking #'+b.id+' created');go('#/me')}
+ catch(e){toast(e.message,true);$('#bk').disabled=false}}
+
+/* ---------------- customer dashboard ---------------- */
+async function viewCustomer(){const list=await guard(()=>api('/bookings'))||[];
+ $('#app').innerHTML=`<h2>My bookings</h2>`+(list.map(b=>bookingRow(b,'CUSTOMER')).join('')||'<p class="mut">No bookings yet. <a href="#/">Find a garage</a>.</p>')}
+const bookingRow=(b,role)=>`<div class="card row" style="justify-content:space-between"><div><b>#${b.id} ${esc(b.service)}</b> <span class="pill">${b.status.replace(/_/g,' ')}</span><div class="mut">${esc(b.vehicle)} · ${fmt(b.slot_start)}${role!=='CUSTOMER'?' · '+esc(b.customer):''}</div></div><button onclick="openJob(${b.id})">Open</button></div>`;
+
+/* ---------------- job card modal (all roles) ---------------- */
+async function openJob(id){const c=await guard(()=>api('/bookings/'+id));if(!c)return;S.job=c;await drawJob()}
+async function drawJob(){const c=S.job,role=c.role;
+ const est=c.estimates.map(e=>`<div class="card"><b>Estimate v${e.version}</b> <span class="pill">${e.status}</span> <b style="float:right">${pkr(e.total)}</b><div class="mut">${esc(e.diagnosis)}</div><table>${e.items.map(i=>`<tr><td>${i.kind}</td><td>${esc(i.description)}</td><td>${i.qty} × ${pkr(i.unit_price)}</td></tr>`).join('')}</table>${e.decided_at?`<div class="mut">Decision ${fmt(e.decided_at)} ${esc(e.decision_reason)}</div>`:''}</div>`).join('');
+ const acts=await actionsFor(c);
+ modal(`<div class="row"><h3 style="flex:1;margin:0">Booking #${c.id} · ${esc(c.service)}</h3><span class="pill">${c.status.replace(/_/g,' ')}</span><button onclick="closeModal();render()">Close</button></div>
+ <p class="mut">${esc(c.vehicle)} · ${fmt(c.slot_start)}${c.technician?' · Technician: '+esc(c.technician):''}${c.customer_phone?' · '+esc(c.customer)+' ☎ '+esc(c.customer_phone):''}</p>${c.notes?`<p>📝 ${esc(c.notes)}</p>`:''}
+ <div class="card" id="acts">${acts}</div>${est}
+ ${c.allocations.length?`<div class="card"><b>Parts</b><table>${c.allocations.map(a=>`<tr><td>${esc(a.item)}</td><td>${a.reserved}/${a.needed} reserved</td><td>${a.status}</td></tr>`).join('')}</table></div>`:''}
+ ${c.qc.length?`<div class="card"><b>Quality control</b>${c.qc.map(q=>`<div>${q.status}${q.issue?': '+esc(q.issue):''}</div>`).join('')}</div>`:''}
+ <h4>Timeline</h4><div class="tl">${c.history.map(h=>`<div><b>${h.to.replace(/_/g,' ')}</b> <span class="mut">${fmt(h.at)} · ${esc(h.actor)}</span>${h.reason?`<div class="mut">${esc(h.reason)}</div>`:''}</div>`).join('')}</div>`)}
+async function act(path,body,msg){await guard(async()=>{S.job=await api(`/bookings/${S.job.id}/${path}`,{method:'POST',body:body||{}});toast(msg||'Done');await drawJob();await loadNotif()})}
+async function actionsFor(c){const s=c.status,role=c.role,me=S.me.id,B=(label,fn,cls='')=>`<button class="${cls}" onclick="${fn}">${label}</button> `;let h='';
+ const cancellable=['PENDING','CONFIRMED','ASSIGNED','INSPECTING','ESTIMATE_REVIEW','AWAITING_CUSTOMER','ESTIMATE_APPROVED','ESTIMATE_REJECTED','PARTS_PENDING','PARTS_READY'].includes(s);
+ if(role==='CUSTOMER'){if(s==='AWAITING_CUSTOMER')h+=B('Accept estimate',"act('estimate/respond',{accept:true},'Estimate accepted')",'p')+B('Reject estimate',"rejectEst()",'d');if(cancellable)h+=B('Cancel booking',"act('cancel',{reason:'Cancelled by customer'},'Cancelled')",'d')}
+ if(role==='OWNER'||role==='SERVICE_ADVISOR'){
+  if(s==='PENDING')h+=B('Confirm booking',"act('confirm')",'p');
+  if(s==='CONFIRMED'){const st=(await api(`/shops/${c.shop_id}/staff`)).filter(x=>x.role==='TECHNICIAN'&&x.active);h+=`<select id="tsel" style="width:auto">${st.map(x=>`<option value="${x.user_id}">${esc(x.name)}</option>`).join('')}</select> `+B('Assign technician',"act('assign',{technician_id:+$('#tsel').value})",'p')}
+  if(s==='ESTIMATE_REVIEW')h+=B('Send estimate to customer',"act('send-estimate')",'p');
+  if(s==='ESTIMATE_REJECTED')h+=B('Request revision',"act('request-revision',{reason:'Revise estimate'})",'p');
+  if(s==='READY_FOR_PICKUP')h+=B('Complete & hand over',"act('complete')",'p');
+  if(cancellable)h+=B('Cancel',"act('cancel',{reason:'Cancelled by shop'},'Cancelled')",'d')}
+ if(role==='TECHNICIAN'&&c.technician_id===me){
+  if(s==='ASSIGNED')h+=B('Start inspection',"act('start-inspection')",'p');
+  if(s==='INSPECTING')h+=await estimateForm(c);
+  if(s==='PARTS_READY')h+=B('Start repair',"act('start-repair')",'p');
+  if(s==='IN_REPAIR')h+=B('Repair finished → send to QC',"act('submit-qc')",'p')}
+ if(role==='PARTS_PERSON'&&['ESTIMATE_APPROVED','PARTS_PENDING'].includes(s))h+=B(s==='PARTS_PENDING'?'Re-check stock & allocate':'Check stock & allocate parts',"act('parts/allocate',{},'Allocation checked')",'p');
+ if(role==='QC_INSPECTOR'){if(s==='QC_PENDING')h+=B('Claim QC job',"act('qc/claim')",'p');
+  if(s==='QC_IN_PROGRESS'&&c.qc_inspector_id===me){const cl=await api('/qc/checklist');h+=cl.map((x,i)=>`<label style="display:inline-block;margin-right:12px"><input type="checkbox" class="qk" data-k="${esc(x)}" style="width:auto"> ${esc(x)}</label>`).join('')+`<div>${B('Pass QC',"passQC()",'p')}</div><label>Issue found</label><input id="qi"><div style="margin-top:6px">${B('Fail QC → back to repair',"failQC()",'d')}</div>`}}
+ return h||'<span class="mut">No action available for you at this stage.</span>'}
+function rejectEst(){const r=prompt('Reason for rejecting (optional)')??null;if(r===null)return;act('estimate/respond',{accept:false,reason:r},'Estimate rejected')}
+function passQC(){const cl={};document.querySelectorAll('.qk').forEach(e=>cl[e.dataset.k]=e.checked);act('qc/pass',{checklist:cl},'QC passed')}
+function failQC(){const cl={};document.querySelectorAll('.qk').forEach(e=>cl[e.dataset.k]=e.checked);act('qc/fail',{issue:$('#qi').value,checklist:cl},'Returned to repair')}
+async function estimateForm(c){const inv=await api(`/shops/${c.shop_id}/inventory`);S.estInv=inv;S.estRows=[];setTimeout(()=>addEstRow('LABOUR'),0);
+ return `<b>Prepare estimate</b><label>Diagnosis</label><textarea id="dg"></textarea><table id="er"></table><button onclick="addEstRow('PART')">+ Part</button> <button onclick="addEstRow('LABOUR')">+ Labour</button> <button class="p" onclick="submitEst()">Submit estimate</button>`}
+function addEstRow(kind){const t=$('#er');if(!t)return;const tr=document.createElement('tr');tr.dataset.kind=kind;
+ tr.innerHTML=`<td>${kind}</td><td>${kind==='PART'?`<select class="inv" onchange="this.closest('tr').querySelector('.ds').value=this.options[this.selectedIndex].text.split(' (')[0]">${S.estInv.map(i=>`<option value="${i.id}">${esc(i.name)} (${i.available} avail)</option>`).join('')}</select>`:''}<input class="ds" placeholder="Description" value="${kind==='PART'&&S.estInv[0]?esc(S.estInv[0].name):''}"></td><td><input class="qy" type="number" value="1" min="1" style="width:70px"></td><td><input class="pr" type="number" value="0" min="0" style="width:110px"></td><td><button onclick="this.closest('tr').remove()">✕</button></td>`;t.appendChild(tr)}
+function submitEst(){const items=[...document.querySelectorAll('#er tr')].map(r=>({kind:r.dataset.kind,description:r.querySelector('.ds').value,qty:+r.querySelector('.qy').value,unit_price:+r.querySelector('.pr').value,inventory_item_id:r.dataset.kind==='PART'?+r.querySelector('.inv').value:null}));act('estimate',{diagnosis:$('#dg').value,items},'Estimate submitted')}
+
+/* ---------------- shop POS ---------------- */
+async function viewPOS(){const shops=await guard(()=>api('/shops/mine'))||[];const P=S.pos;
+ if(!shops.length&&S.me.is_owner){P.shops=[];P.tab='shops'}else if(!shops.length){$('#app').innerHTML='<p>You are not a member of any active shop.</p>';return}
+ P.shops=shops;if(!P.shop||!shops.find(s=>s.id===P.shop))P.shop=shops[0]?.id;const cur=shops.find(s=>s.id===P.shop);P.role=cur?.role;
+ const tabs={OWNER:['overview','queue','calls','inventory','orders','team','shops'],SERVICE_ADVISOR:['queue','calls','inventory'],TECHNICIAN:['queue'],PARTS_PERSON:['queue','inventory','orders'],QC_INSPECTOR:['queue']}[P.role]||['shops'];
+ if(!tabs.includes(P.tab))P.tab=tabs[0];
+ $('#app').innerHTML=`<div class="row" style="margin-bottom:10px"><select id="shopsel" style="width:auto" onchange="S.pos.shop=+this.value;viewPOS()">${shops.map(s=>`<option value="${s.id}" ${s.id===P.shop?'selected':''}>${esc(s.name)} — ${ROLE[s.role]}</option>`).join('')}</select></div><div class="tabs">${tabs.map(t=>`<button class="${P.tab===t?'p':''}" onclick="S.pos.tab='${t}';viewPOS()">${t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div><div id="pane"></div>`;
+ ({overview:tabOverview,calls:tabCalls,queue:tabQueue,inventory:tabInventory,orders:tabOrders,team:tabTeam,shops:tabShops})[P.tab]()}
+async function tabQueue(){const P=S.pos;const list=await guard(()=>api(`/shops/${P.shop}/bookings`))||[];
+ const open=list.filter(b=>!['COMPLETED','CANCELLED'].includes(b.status));const done=list.filter(b=>['COMPLETED','CANCELLED'].includes(b.status));
+ $('#pane').innerHTML=`<h3>Active jobs (${open.length})</h3>${open.map(b=>bookingRow(b,P.role)).join('')||'<p class="mut">Nothing in your queue.</p>'}<h4 class="mut">Closed (${done.length})</h4>${done.slice(0,10).map(b=>bookingRow(b,P.role)).join('')}`}
+async function tabOverview(){const sid=S.pos.shop;const [o,a]=await Promise.all([api(`/shops/${sid}/overview`),api(`/shops/${sid}/analytics?days=30`)]).catch(e=>{toast(e.message,true);return[null,null]});if(!o)return;
+ const k=(v,l)=>`<div class="card"><h3 style="margin:0">${v}</h3><span class="mut">${l}</span></div>`;const pct=x=>x==null?'—':Math.round(x*100)+'%';
+ $('#pane').innerHTML=`<h3>Last 30 days</h3><div class="grid">${k(pkr(a.revenue_pkr),'Revenue (completed jobs)')}${k(a.completed+' / '+a.bookings,'Completed / bookings')}${k(pkr(a.avg_job_value_pkr),'Average job value')}${k(a.avg_turnaround_hours==null?'—':a.avg_turnaround_hours+' h','Avg turnaround')}${k(pct(a.qc_fail_rate),'QC failure rate')}${k(pct(a.cancel_rate),'Cancellation rate')}${k(a.calls,'AI front-desk calls')}${k(a.open_callbacks,'Open callback tasks')}</div>
+ <div class="grid"><div class="card"><b>Top services</b><table>${a.top_services.map(([n,c])=>`<tr><td>${esc(n)}</td><td>${c}</td></tr>`).join('')||'<tr><td class="mut">No data</td></tr>'}</table></div>
+ <div class="card"><b>Technician workload (open jobs)</b><table>${Object.entries(a.technician_workload).map(([n,c])=>`<tr><td>${esc(n)}</td><td>${c}</td></tr>`).join('')||'<tr><td class="mut">None</td></tr>'}</table></div></div>
+ <div class="card"><b>Bookings by status (all time)</b><table>${Object.entries(o.bookings_by_status).map(([k2,v])=>`<tr><td>${k2.replace(/_/g,' ')}</td><td>${v}</td></tr>`).join('')||'<tr><td class="mut">None yet</td></tr>'}</table></div>
+ <div class="card"><b>Low / out of stock</b><table>${o.low_stock.map(i=>`<tr><td>${esc(i.name)}</td><td>${i.available} available</td></tr>`).join('')||'<tr><td class="mut">All good</td></tr>'}</table></div>`}
+async function tabInventory(){const P=S.pos,items=await guard(()=>api(`/shops/${P.shop}/inventory`))||[];const w=['OWNER','PARTS_PERSON'].includes(P.role);
+ $('#pane').innerHTML=`<div class="card"><table><tr><th>SKU</th><th>Part</th><th>On hand</th><th>Reserved</th><th>Available</th>${w?'<th></th>':''}</tr>${items.map(i=>`<tr><td>${esc(i.sku)}</td><td>${esc(i.name)}</td><td>${i.on_hand}</td><td>${i.reserved}</td><td ${i.available<=i.reorder_level?'style="color:var(--bad)"':''}>${i.available}</td>${w?`<td><button onclick="adj(${i.id})">Adjust</button></td>`:''}</tr>`).join('')}</table></div>
+ ${w?`<div class="card"><b>Add part</b><div class="row"><input id="ns" placeholder="SKU" style="width:110px"><input id="nn" placeholder="Name" style="width:200px"><input id="nq" type="number" placeholder="Qty" style="width:80px"><input id="nr" type="number" placeholder="Reorder at" style="width:100px"><button class="p" onclick="addItem()">Add</button></div></div>`:''}`}
+const addItem=()=>guard(async()=>{await api(`/shops/${S.pos.shop}/inventory`,{method:'POST',body:{sku:$('#ns').value,name:$('#nn').value,on_hand:+$('#nq').value||0,reorder_level:+$('#nr').value||0}});toast('Part added');tabInventory()});
+const adj=id=>{const d=prompt('Adjust stock by (e.g. 5 or -2)');if(!d)return;guard(async()=>{await api(`/shops/${S.pos.shop}/inventory/${id}/adjust`,{method:'POST',body:{delta:+d,reason:prompt('Reason')||'manual'}});tabInventory()})};
+async function tabOrders(){const P=S.pos;const [pos,items]=await Promise.all([api(`/shops/${P.shop}/purchase-orders`),api(`/shops/${P.shop}/inventory`)]).catch(e=>{toast(e.message,true);return[[],[]]});S.poKey=crypto.randomUUID();
+ $('#pane').innerHTML=`<div class="card"><b>New purchase order</b><div class="row"><input id="ps" placeholder="Supplier" style="width:200px"><select id="pi" style="width:auto">${items.map(i=>`<option value="${i.id}">${esc(i.name)}</option>`).join('')}</select><input id="pq" type="number" value="1" min="1" style="width:80px"><button class="p" onclick="createPO()">Create PO</button></div></div>`+
+ pos.map(p=>`<div class="card"><b>PO #${p.id}</b> · ${esc(p.supplier)} <span class="pill">${p.status}</span><table>${p.lines.map(l=>`<tr><td>${esc(l.item)}</td><td>${l.received}/${l.ordered} received</td><td>${l.received<l.ordered?`<input type="number" min="1" max="${l.ordered-l.received}" value="${l.ordered-l.received}" id="rv${l.po_item_id}" style="width:80px"> <button onclick="recv(${p.id},${l.po_item_id})">Receive</button>`:'✔'}</td></tr>`).join('')}</table></div>`).join('')}
+const createPO=()=>guard(async()=>{await api(`/shops/${S.pos.shop}/purchase-orders`,{method:'POST',idem:S.poKey,body:{supplier:$('#ps').value,items:[{item_id:+$('#pi').value,qty:+$('#pq').value}]}});toast('PO created');tabOrders()});
+const recv=(p,l)=>guard(async()=>{await api(`/shops/${S.pos.shop}/purchase-orders/${p}/receive`,{method:'POST',idem:crypto.randomUUID(),body:{lines:[{po_item_id:l,qty:+$('#rv'+l).value}]}});toast('Stock received');tabOrders()});
+async function tabTeam(){const P=S.pos,st=await guard(()=>api(`/shops/${P.shop}/staff`))||[];
+ $('#pane').innerHTML=`<div class="card"><table><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr>${st.map(m=>`<tr><td>${esc(m.name)}</td><td>${esc(m.email)}</td><td>${ROLE[m.role]}</td><td>${m.role==='OWNER'?'':`<button onclick="toggleStaff(${m.membership_id},${!m.active})">${m.active?'Deactivate':'Activate'}</button>`}</td></tr>`).join('')}</table></div>
+ <div class="card"><b>Add team member</b><div class="row"><input id="tn" placeholder="Name"><input id="te" placeholder="Email"><input id="tp" type="password" placeholder="Password (8+)"><select id="tr" style="width:auto">${['SERVICE_ADVISOR','TECHNICIAN','PARTS_PERSON','QC_INSPECTOR'].map(r=>`<option value="${r}">${ROLE[r]}</option>`).join('')}</select><button class="p" onclick="addStaff()">Add</button></div></div>`}
+const addStaff=()=>guard(async()=>{await api(`/shops/${S.pos.shop}/staff`,{method:'POST',body:{name:$('#tn').value,email:$('#te').value,password:$('#tp').value,role:$('#tr').value}});toast('Team member added');tabTeam()});
+const toggleStaff=(m,a)=>guard(async()=>{await api(`/shops/${S.pos.shop}/staff/${m}`,{method:'PATCH',body:{active:a}});tabTeam()});
+async function tabShops(){const P=S.pos,cur=P.shops.find(s=>s.id===P.shop),svc=cur?await api(`/shops/${P.shop}/services`):[];
+ $('#pane').innerHTML=(cur?`<div class="card"><b>Settings – ${esc(cur.name)}</b><div class="row">${[['name','Name'],['city','City'],['address','Address'],['phone','Phone'],['open_time','Opens'],['close_time','Closes'],['slot_minutes','Slot (min)'],['capacity','Capacity/slot'],['closed_weekdays','Closed weekdays (Mon=0…Sun=6)'],['closed_dates','Closed dates (YYYY-MM-DD,…)']].map(([k,l])=>`<div><label>${l}</label><input id="f_${k}" value="${esc(cur[k])}"></div>`).join('')}</div><p><button class="p" onclick="saveShop()">Save</button></p></div>
+ <div class="card"><b>Services</b><table>${svc.map(x=>`<tr><td>${esc(x.name)}</td><td>${pkr(x.price)}</td><td>${x.duration_min} min</td><td>${x.active?'active':'inactive'}</td><td><button onclick="toggleSvc(${x.id})">${x.active?'Deactivate':'Activate'}</button></td></tr>`).join('')}</table>
+ <div class="row"><input id="sn" placeholder="Service name"><input id="sp2" type="number" placeholder="Price PKR" style="width:120px"><input id="sd" type="number" placeholder="Minutes" style="width:100px"><button class="p" onclick="addSvc()">Add service</button></div></div>`:'')+
+ `<div class="card"><b>Create new shop</b><div class="row"><input id="cs_n" placeholder="Shop name"><input id="cs_c" placeholder="City"><button class="p" onclick="newShop()">Create</button></div></div>`;
+ window._svc=svc}
+const saveShop=()=>guard(async()=>{const b={};['name','city','address','phone','open_time','close_time','closed_weekdays','closed_dates'].forEach(k=>b[k]=$('#f_'+k).value);b.slot_minutes=+$('#f_slot_minutes').value;b.capacity=+$('#f_capacity').value;await api('/shops/'+S.pos.shop,{method:'PATCH',body:b});toast('Saved');viewPOS()});
+const addSvc=()=>guard(async()=>{await api(`/shops/${S.pos.shop}/services`,{method:'POST',body:{name:$('#sn').value,price:+$('#sp2').value||0,duration_min:+$('#sd').value||60}});tabShops()});
+const toggleSvc=id=>guard(async()=>{const x=window._svc.find(s=>s.id===id);await api(`/shops/${S.pos.shop}/services/${id}`,{method:'PATCH',body:{name:x.name,price:x.price,duration_min:x.duration_min,active:!x.active}});tabShops()});
+const newShop=()=>guard(async()=>{const s=await api('/shops',{method:'POST',body:{name:$('#cs_n').value,city:$('#cs_c').value}});S.pos.shop=s.id;toast('Shop created');S.me=null;viewPOS()});
+/* ---------------- AI front desk call ---------------- */
+const CALL={id:null,shop:null,ended:false,muted:false,auto:true,rec:null,busy:false};
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const cstat=t=>{const e=$('#cstat');if(e)e.textContent=t};
+function addLine(who,text){const l=$('#clog');if(!l)return;const d=document.createElement('div');d.className='card';d.style.cssText='margin:6px 0;padding:8px 10px;'+(who==='you'?'background:var(--bg);margin-left:40px':'margin-right:40px');d.innerHTML=`<b>${who==='you'?'You':'🤖 Front desk'}:</b> ${esc(text)}`;l.appendChild(d);l.scrollTop=l.scrollHeight}
+async function startCall(sid){const shop=await guard(()=>api('/public/shops/'+sid));if(!shop)return;
+ Object.assign(CALL,{id:null,shop,ended:false,busy:false});
+ modal(`<div class="row"><h3 style="flex:1;margin:0">📞 ${esc(shop.name)}</h3><button class="d" onclick="endCall()">End call</button></div>
+ <p class="mut" id="cstat">Connecting…</p><div id="clog" style="max-height:340px;overflow:auto"></div>
+ <div class="row" style="margin-top:10px"><input id="cin" placeholder="Type your question…" style="flex:1;min-width:180px" onkeydown="if(event.key==='Enter')sendText()"><button class="p" id="csend" onclick="sendText()">Send</button>${SR?'<button id="cmic" onclick="listen()">🎤 Speak</button>':''}</div>
+ <div class="row mut" style="margin-top:8px;font-size:13px"><label style="display:inline;margin:0"><input type="checkbox" style="width:auto" onchange="CALL.muted=this.checked;if(this.checked)speechSynthesis&&speechSynthesis.cancel()"> Mute voice</label>${SR?'<label style="display:inline;margin:0"><input type="checkbox" style="width:auto" checked onchange="CALL.auto=this.checked"> Hands-free (listen after each answer)</label>':'<span>Voice input needs Chrome or Edge – you can type instead.</span>'}</div>
+ <p class="mut" style="font-size:12px">This is an AI assistant. It shares public garage information; booking details are only available if you are signed in.</p>`);
+ try{const d=await api(`/public/shops/${sid}/call/start`,{method:'POST'});CALL.id=d.call_id;addLine('agent',d.greeting);cstat('Connected'+(d.signed_in?' (signed in)':''));speak(d.greeting)}catch(e){cstat('Could not connect: '+e.message)}}
+function speak(text){if(CALL.ended)return;const done=()=>{cstat('Your turn');if(CALL.auto&&SR&&!CALL.ended&&!CALL.busy)listen()};
+ if(CALL.muted||!window.speechSynthesis||!window.SpeechSynthesisUtterance){done();return}
+ try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='en-US';u.onend=done;u.onerror=done;cstat('Agent speaking…');speechSynthesis.speak(u)}catch{done()}}
+function listen(){if(!SR||CALL.ended||CALL.busy)return;try{if(CALL.rec)CALL.rec.abort()}catch{}
+ const r=new SR();CALL.rec=r;r.lang='en-US';r.interimResults=false;r.maxAlternatives=1;cstat('Listening… speak now');
+ r.onresult=e=>{const t=e.results[0][0].transcript;if(t)ask(t)};r.onerror=e=>cstat(e.error==='not-allowed'?'Microphone blocked – allow it, or type below':'Didn\'t catch that – tap Speak or type');r.onend=()=>{if(!CALL.busy&&$('#cstat')&&$('#cstat').textContent.startsWith('Listening'))cstat('Tap Speak or type')};
+ try{r.start()}catch{}}
+function sendText(){const i=$('#cin');if(!i||!i.value.trim())return;const t=i.value.trim();i.value='';ask(t)}
+async function ask(text){if(!CALL.id||CALL.ended||CALL.busy)return;CALL.busy=true;addLine('you',text);cstat('Agent thinking…');
+ try{const d=await api(`/public/shops/${CALL.shop.id}/call/${CALL.id}/say`,{method:'POST',body:{message:text}});addLine('agent',d.reply);CALL.busy=false;speak(d.reply);if(d.end)setTimeout(()=>endCall(),300)}
+ catch(e){CALL.busy=false;addLine('agent','Sorry, something went wrong: '+e.message);cstat('Your turn')}}
+async function endCall(silent){if(CALL.ended)return;CALL.ended=true;try{speechSynthesis&&speechSynthesis.cancel()}catch{};try{CALL.rec&&CALL.rec.abort()}catch{}
+ let s='';try{if(CALL.id)s=(await api(`/public/shops/${CALL.shop.id}/call/${CALL.id}/end`,{method:'POST'})).summary}catch{}
+ if(!silent){cstat('Call ended');const i=$('#cin');if(i)i.disabled=true;const b=$('#csend');if(b)b.disabled=true;addLine('agent','Call ended. Thanks for calling!')}CALL.id=null}
+/* ---------------- calls & tasks tab (staff) ---------------- */
+async function tabCalls(){const sid=S.pos.shop;const [calls,tasks]=await Promise.all([api(`/shops/${sid}/calls`),api(`/shops/${sid}/tasks`)]).catch(e=>{toast(e.message,true);return[[],[]]});
+ $('#pane').innerHTML=`<h3>Callback tasks</h3>`+(tasks.map(t=>`<div class="card row" style="justify-content:space-between"><div><b>${esc(t.name)}</b> ☎ ${esc(t.phone)} <span class="pill">${t.status}</span><div class="mut">${esc(t.note)} · ${fmt(t.created_at)}</div></div><button onclick="setTask(${t.id},'${t.status==='OPEN'?'DONE':'OPEN'}')">${t.status==='OPEN'?'Mark done':'Reopen'}</button></div>`).join('')||'<p class="mut">No callback requests.</p>')+
+ `<h3>AI front-desk calls</h3>`+(calls.map(c=>`<details class="card"><summary><b>${esc(c.caller)}</b> · ${fmt(c.started_at)} ${c.ended?'':'<span class="pill">live/unfinished</span>'}<div class="mut">${esc(c.summary||'No summary yet')}</div></summary>${c.transcript.map(x=>`<div><b>${x.who==='you'?'Caller':'Agent'}:</b> ${esc(x.text)}</div>`).join('')}</details>`).join('')||'<p class="mut">No calls yet.</p>')}
+const setTask=(id,st)=>guard(async()=>{await api(`/shops/${S.pos.shop}/tasks/${id}`,{method:'PATCH',body:{status:st}});tabCalls()});
+render();setInterval(()=>{if(S.me)loadNotif().then(()=>{const b=document.querySelector('.bell');if(b)b.innerHTML='🔔'+(S.notif.unread?`<i>${S.notif.unread}</i>`:'')})},30000);
+</script></body></html>
